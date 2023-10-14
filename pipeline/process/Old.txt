@@ -1,0 +1,20 @@
+FROM python:3.9-slim-buster 
+WORKDIR /app
+
+COPY . .
+
+
+
+RUN pip install vaderSentiment
+
+RUN pip install kafka-python
+
+RUN pip install orjson
+
+RUN pip install "typer[all]"
+
+# RUN pip install python-dotenv
+
+
+
+ENTRYPOINT [ "python" ,"analysis.py"]
