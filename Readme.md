@@ -12,9 +12,8 @@ Analyse the live chat messages from a live youtube video and display in a custom
 
 ## Demo
 
-[Demo Video](assets/Demo.mp4)
+https://youtu.be/RPR3K9yUDVM
 
-<video src='assets/Demo.mp4'>
 
 
 
