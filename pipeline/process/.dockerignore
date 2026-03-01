@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+main.env
+.env
+*.log
+*.txt.bak
+Old.txt
+.git/

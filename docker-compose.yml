@@ -1,0 +1,203 @@
+services:
+
+  # ── Zookeeper (Kafka dependency) ────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.2.1
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # ── Kafka broker ─────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-server:7.2.1
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9997:9997"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9997
+      KAFKA_JMX_HOSTNAME: kafka
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
+
+  # ── Kafka UI (browser at http://localhost:8000) ──────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8000:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ── PostgreSQL (schema + LISTEN/NOTIFY trigger created by init.sql) ──────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: livechat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d livechat"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── pgAdmin (browser UI at http://localhost:5050) ────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    restart: unless-stopped
+
+  # ── Playwright browser server (remote Chromium for scraper) ─────────────────
+  playwright-server:
+    build:
+      context: ./docker/playwright
+      dockerfile: Dockerfile
+    container_name: playwright-server
+    ports:
+      - "3333:3333"
+    restart: unless-stopped
+
+  # ── Processor (VADER sentiment: raw → publish) ───────────────────────────────
+  processor:
+    build:
+      context: ./pipeline/process
+      dockerfile: Dockerfile
+    container_name: processor
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_SERVER: kafka:29092
+      TRANSFORM_CONSUME_TOPIC: raw
+      TRANSFORM_PRODUCE_TOPIC: publish
+    restart: unless-stopped
+
+  # ── Loader (Kafka publish → PostgreSQL chats/info) ───────────────────────────
+  loader:
+    build:
+      context: ./pipeline/load
+      dockerfile: Dockerfile
+    container_name: loader
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_SERVER: kafka:29092
+      LOAD_CONSUME_TOPIC: publish
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/livechat
+    restart: unless-stopped
+
+  # ── Backend (FastAPI + Playwright scraper at http://localhost:3000) ───────────
+  backend:
+    build:
+      context: ./client/backend
+      dockerfile: Dockerfile
+    container_name: backend
+    ports:
+      - "3000:3000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      playwright-server:
+        condition: service_started
+    environment:
+      KAFKA_SERVER: kafka:29092
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/livechat
+      PLAYWRIGHT_SERVER_URL: ws://playwright-server:3333
+      RAW_TOPIC: raw
+      MAX_SESSIONS: 3
+      EMOJI_MODE: TEXT
+    restart: unless-stopped
+
+  # ── Frontend (React → nginx at http://localhost:5173) ────────────────────────
+  frontend:
+    build:
+      context: ./client/frontend/chat-tracker
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ── Superset (visualization at http://localhost:8088) ────────────────────────
+  # Connect PostgreSQL in the UI: Settings → Database Connections → + Database
+  #   Engine: PostgreSQL   URI: postgresql://postgres:postgres@postgres:5432/livechat
+  superset:
+    build:
+      context: ./docker/superset
+      dockerfile: Dockerfile
+    container_name: superset
+    ports:
+      - "8088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - superset_data:/app/superset_home
+    environment:
+      SUPERSET_SECRET_KEY: "change-me-to-a-random-32-char-string"
+    restart: unless-stopped
+
+volumes:
+  zookeeper_data:
+    driver: local
+  kafka_data:
+    driver: local
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  superset_data:
+    driver: local
