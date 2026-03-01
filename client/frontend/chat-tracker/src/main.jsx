@@ -3,16 +3,16 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 import { BrowserRouter } from 'react-router-dom'
-import { ViewerProvider } from './contexts/ViewerContext'
+import { SessionProvider } from './contexts/SessionContext'
 
 
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <BrowserRouter>
-    <ViewerProvider>
+    <SessionProvider>
       <App />
-    </ViewerProvider>
+    </SessionProvider>
     </BrowserRouter>
   </React.StrictMode>
 )
