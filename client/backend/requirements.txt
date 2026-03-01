@@ -1,0 +1,11 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+asyncpg>=0.29.0
+kafka-python>=2.0.2
+sse-starlette>=1.8.2
+orjson>=3.9.10
+pydantic>=2.4.2
+yt-dlp>=2023.10.13
+playwright>=1.39.0
+python-dotenv>=1.0.0
+emoji
