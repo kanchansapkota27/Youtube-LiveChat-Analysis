@@ -1,10 +1,13 @@
 import React from 'react'
-import Track from './pages/Track'
+import { Routes, Route } from 'react-router-dom'
+import Dashboard from './pages/Dashboard'
+import SessionView from './pages/SessionView'
 
-export const App = () => {
+export default function App() {
   return (
-    <Track/>
+    <Routes>
+      <Route path="/" element={<Dashboard />} />
+      <Route path="/session/:id" element={<SessionView />} />
+    </Routes>
   )
 }
-
-export default App

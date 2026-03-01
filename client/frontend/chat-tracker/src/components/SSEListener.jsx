@@ -1,71 +1,33 @@
-import React, { useEffect, useState,useRef } from 'react';
-import VideoMessage from './VideoMessage'; // Import your VideoMessage component
-import { useViewer } from '../contexts/ViewerContext';
+/**
+ * SSEListener — generic per-session SSE subscriber.
+ * Props:
+ *   sessionId  : string  — session to subscribe to
+ *   onMessage  : (msg) => void — callback for each new message
+ *   onViewerUpdate : (count, isLive) => void — optional
+ */
+import { useEffect } from 'react'
 
-const MAX_MESSAGES = 150; // Maximum number of messages to display
-
-const SSEListener = () => {
-  const [messages, setMessages] = useState([]);
-  const messagesContainerRef = useRef(null);
-
-  const {setViewerCount,setIsLive,video,setVideo}=useViewer()
-
+const SSEListener = ({ sessionId, onMessage, onViewerUpdate }) => {
   useEffect(() => {
-    const eventSource = new EventSource('http://localhost:3000/stream');
+    if (!sessionId) return
+    const es = new EventSource(`http://localhost:3000/stream/${sessionId}`)
 
-    eventSource.onmessage = (event) => {
-        const rawData=event.data;
-        // const validJSONData = rawData.replace(/'/g, '"').replace(/True/g, 'true');
-        const validJSONData = rawData
-  .replace(/'/g, '"')
-  .replace(/True/g, 'true')
-  .replace(/False/g, 'false');
-      const eventData = JSON.parse(validJSONData);
-      if(video==null){
-        // setVideo(`https://www.youtube.com/watch?v=${eventData.video_id}`)
-        setVideo(eventData.video_id)
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (onMessage) onMessage(data)
+        if (onViewerUpdate) onViewerUpdate(data?.viewers_count, data?.is_live)
+      } catch (e) {
+        console.error('SSE parse error:', e)
       }
-      setViewerCount(eventData?.viewers_count)
-      setIsLive(eventSource?.is_live)
-
-      // Update messages array while maintaining the maximum limit
-      // setMessages((prevMessages) => {
-      //   const newMessages = [eventData, ...prevMessages].slice(0, MAX_MESSAGES);
-      //   return newMessages;
-      // });
-
-      setMessages((prevMessages) => {
-        const newMessages = [...prevMessages, eventData].slice(-MAX_MESSAGES);
-        return newMessages;
-      });
-
-    };
-
-    
-
-    eventSource.onerror = (error) => {
-      console.error('SSE Error:', error);
-    };
-
-    return () => {
-      eventSource.close();
-    };
-  }, []);
-
-  useEffect(() => {
-    // Scroll to the bottom when messages change
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
-  }, [messages]);
 
-  return (
-    <div ref={messagesContainerRef} className='h-full overflow-y-auto py-10'>
-      {messages.map((message, index) => (
-        <VideoMessage key={index} data={message} />
-      ))}
-    </div>
-  );
-};
+    es.onerror = (e) => console.error('SSE error:', e)
 
-export default SSEListener;
+    return () => es.close()
+  }, [sessionId])
+
+  return null
+}
+
+export default SSEListener

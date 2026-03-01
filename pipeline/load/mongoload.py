@@ -1,93 +1,122 @@
+import psycopg2
 from kafka import KafkaConsumer
-from pymongo import MongoClient
 import orjson
 import settings
-from pprint import pprint
 import logging
-import sys
 import typer
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
-                    handlers=[
-                        logging.FileHandler('loader.log'),
-                        logging.StreamHandler()
-                    ])
 
-
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
+    handlers=[
+        logging.FileHandler('loader.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-app=typer.Typer()
+app = typer.Typer()
 
 
-# Connect to MongoDB and pizza_data database
-logger=logging.getLogger(__name__)
-
-class MongoLoader:
+class PgLoader:
     def __init__(self) -> None:
-        self.server=settings.KAFKA_SERVER
-        self.connection_url=settings.MONGO_DB_URL
-   
+        self.server = settings.KAFKA_SERVER
+        self.postgres_url = settings.POSTGRES_URL
+
     def init_db(self):
-        client = MongoClient(self.connection_url)
-        self.client=client
-        
-        try:
-            client.admin.command('ping')
-            logger.info('Ping db successfully.')
-        except Exception as e:
-            logger.exception(e,stack_info=True)
-            exit(1)
-        db=self.client.main
-        self.db=db
+        self.conn = psycopg2.connect(self.postgres_url)
+        self.conn.autocommit = False
+        logger.info('Connected to PostgreSQL.')
 
     def __start_consumer(self):
-        consume_topic=settings.ANALYZED_TOPIC
-        self.consumer=KafkaConsumer(consume_topic,bootstrap_servers=self.server)
-        logger.info(f'Started Kafka Consumer on topic :{consume_topic}')
+        consume_topic = settings.ANALYZED_TOPIC
+        self.consumer = KafkaConsumer(
+            consume_topic,
+            bootstrap_servers=self.server,
+            group_id='loader-group',
+        )
+        logger.info(f'Started Kafka Consumer on topic: {consume_topic}')
 
-    def recieve_upstream(self):
+    def receive_upstream(self):
         for message in self.consumer:
-            raw_message=message.value
-            yield raw_message
+            yield message.value
 
-    def push_to_db(self,json_message,collection_name):
-        if collection_name not in self.db.list_collection_names():
-            self.db.create_collection(collection_name)
-        
-        collection=self.db.get_collection(collection_name)
-        response=collection.insert_one(json_message)
-        logger.info(f'Inserted message with ID of:{response.inserted_id}')
-        return response.inserted_id
-    
+    def push_chat(self, msg: dict):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO chats (
+                    session_id, video_id, message_author_name, message_content,
+                    message_dt, message_time_usec, inferred_sentiment,
+                    has_profanity, viewers_count, is_live
+                ) VALUES (%s, %s, %s, %s, %s::timestamptz, %s, %s, %s, %s, %s)
+                """,
+                (
+                    msg.get('session_id'),
+                    msg.get('video_id', ''),
+                    msg.get('message_author_name', ''),
+                    msg.get('message_content', ''),
+                    msg.get('message_dt'),
+                    msg.get('message_time_usec'),
+                    msg.get('inferred_sentiment'),
+                    msg.get('has_profanity', False),
+                    msg.get('viewers_count', 0),
+                    msg.get('is_live', True),
+                ),
+            )
+        self.conn.commit()
+        logger.info(f"Inserted chat: {msg.get('message_author_name')}: {msg.get('message_content', '')[:40]}")
+
+    def push_video_info(self, msg: dict):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO video_info (
+                    session_id, video_id, channel_name, channel_url,
+                    video_title, video_url, thumbnail_url, is_live
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    msg.get('session_id'),
+                    msg.get('video_id', ''),
+                    msg.get('channel_name', ''),
+                    msg.get('channel_url', ''),
+                    msg.get('video_title', ''),
+                    msg.get('video_url', ''),
+                    msg.get('video_thumbnail_url', ''),
+                    msg.get('is_live', False),
+                ),
+            )
+        self.conn.commit()
+        logger.info(f"Inserted video_info for video_id={msg.get('video_id')}")
+
     def __start_session(self):
         self.init_db()
         self.__start_consumer()
-        for message in self.recieve_upstream():
-            json_message=orjson.loads(message)
-            message_type=json_message['info_type']
-            if message_type=='VIDEO_STATIC_INFO':
-                self.push_to_db(json_message,'info')
-            if message_type=='VIDEO_LIVE_MESSAGE':
-                self.push_to_db(json_message,'live')
-        
+        for message in self.receive_upstream():
+            try:
+                json_message = orjson.loads(message)
+                message_type = json_message.get('info_type')
+                if message_type == 'VIDEO_LIVE_MESSAGE':
+                    self.push_chat(json_message)
+                elif message_type == 'VIDEO_STATIC_INFO':
+                    self.push_video_info(json_message)
+            except Exception as e:
+                logger.error(f'Failed to process message: {e}', exc_info=True)
+                self.conn.rollback()
+
     def load(self):
         try:
             self.__start_session()
         except Exception as e:
-            print(e)
-            logger.error(e)
-
+            logger.error(e, exc_info=True)
 
 
 @app.command()
 def run():
-    loader=MongoLoader()
+    loader = PgLoader()
     loader.load()
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     app()
-
-
-    
-
